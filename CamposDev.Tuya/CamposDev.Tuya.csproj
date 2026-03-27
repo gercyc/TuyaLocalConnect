@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Title>CamposDEV Tuya LAN Lib</Title>
+    <Company>Campos Dev</Company>
+    <Product>CamposDev.Framework</Product>
+    <Description>Serviços de descoberta e leitura de dispositivos Tuya via protocolo LAN 55AA (UDP discovery + TCP 3.4)</Description>
+    <PackageProjectUrl>https://camposdev.ind.br</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CamposDev.Mqtt" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+
+</Project>
