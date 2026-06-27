@@ -1,0 +1,28 @@
+services:
+  tuya-local-connect:
+    build:
+      context: .
+      dockerfile: MqttThSensorWorker/Dockerfile
+    image: tuya-local-connect:latest
+    container_name: tuya-local-connect
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+      # Dispositivo 1 - Ajustar conforme necessidade, obter dados unicos atraves da plataforma tuya
+      - TuyaApi__Devices__0__DeviceId=eb169bae589e44c6b3fieg
+      - TuyaApi__Devices__0__DeviceName=T&H Sensor Mobile
+      - TuyaApi__Devices__0__DeviceModel=RMW002
+      - TuyaApi__Devices__0__LocalKey=Dn@-/=JD^)M>CMdT
+      - TuyaApi__Devices__0__DeviceIp=192.168.101.109
+      # Dispositivo 2
+      - TuyaApi__Devices__1__DeviceId=ebf08db80cc32c090bhjvg
+      - TuyaApi__Devices__1__DeviceName=Sensor LCD
+      - TuyaApi__Devices__1__DeviceModel=GRC0002
+      - TuyaApi__Devices__1__LocalKey=5P1a;XEeHR;jMN2F
+      - TuyaApi__Devices__1__DeviceIp=192.168.101.72
+    volumes:
+      - tuya-logs:/app/Logs
+
+volumes:
+  tuya-logs:

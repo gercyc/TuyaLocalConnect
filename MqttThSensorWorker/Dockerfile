@@ -21,7 +21,7 @@ COPY --from=build /app/publish .
 RUN mkdir -p Logs && chown -R appuser:appgroup /app
 USER appuser
 
-#EXPOSE 6667/udp
-#EXPOSE 6668/tcp
+EXPOSE 6667/udp
+EXPOSE 6668/tcp
 
 ENTRYPOINT ["dotnet", "MqttThSensorWorker.dll"]
