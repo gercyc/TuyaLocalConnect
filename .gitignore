@@ -361,3 +361,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# LocalKeys dos devices Tuya: fora do git, mas copiadas para a imagem no build
+appsettings.local.json

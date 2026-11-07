@@ -6,6 +6,14 @@ using Serilog;
 
 var builder = Host.CreateApplicationBuilder(args);
 
+// LocalKeys dos devices fora do git: appsettings.local.json é ignorado pelo .gitignore e entra
+// na imagem no build. Variáveis de ambiente e argumentos são adicionados de novo depois dele
+// para continuarem vencendo (ex.: TuyaApi__Devices__0__LocalKey no compose ou no Kubernetes).
+builder.Configuration
+    .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
+    .AddEnvironmentVariables()
+    .AddCommandLine(args);
+
 builder.Services.AddSerilog((_, config) =>
     config.WriteTo.Console()
           .ReadFrom.Configuration(builder.Configuration));

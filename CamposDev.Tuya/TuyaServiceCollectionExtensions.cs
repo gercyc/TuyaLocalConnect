@@ -23,6 +23,7 @@ public static class TuyaServiceCollectionExtensions
 
         services.AddSingleton(options);
         services.AddSingleton<TuyaTokenService>();
+        services.AddSingleton<HaDiscoveryPublisher>();
         services.AddSingleton<TuyaLanDiscoveryService>();
         services.AddHostedService(sp => sp.GetRequiredService<TuyaLanDiscoveryService>());
         services.AddHostedService<TuyaLanListenerService>();

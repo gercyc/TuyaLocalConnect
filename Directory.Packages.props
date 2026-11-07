@@ -3,7 +3,7 @@
 		<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
 	</PropertyGroup>
 	<ItemGroup>
-		<PackageVersion Include="CamposDev.Mqtt" Version="1.0.1" />
+		<PackageVersion Include="CamposDev.Mqtt" Version="1.1.0" />
 		<PackageVersion Include="Microsoft.Extensions.Options" Version="9.0.11" />
 		<PackageVersion Include="Microsoft.Extensions.Hosting" Version="9.0.11" />
 		<PackageVersion Include="Serilog" Version="4.3.0" />

@@ -11,12 +11,14 @@ namespace CamposDev.Tuya;
 /// Conecta via TCP LAN (porta 6668) a cada sensor T&amp;H Tuya configurado quando ele acorda
 /// (detectado pelo broadcast UDP do <see cref="TuyaLanDiscoveryService"/>), realiza a
 /// negociação de sessão e lê os DPs diretamente sem nuvem.
-/// Suporta protocolo 3.3 (CRC32, sem sessão) e 3.4 (HMAC-SHA256, sessão negociada).
+/// Suporta protocolo 3.3 (CRC32, sem sessão), 3.4 (HMAC-SHA256, sessão negociada)
+/// e 3.5 (envelope 6699 com AES-GCM, sessão negociada).
 /// Publica o resultado via MQTT no tópico <c>sensor/tuya/th/{deviceId}</c>.
 /// </summary>
-public class TuyaLanListenerService(
+public partial class TuyaLanListenerService(
     TuyaLanDiscoveryService discovery,
     IMqttBrokerService mqttService,
+    HaDiscoveryPublisher haPublisher,
     TuyaApiOptions options,
     ILogger<TuyaLanListenerService> logger)
     : BackgroundService
@@ -24,9 +26,21 @@ public class TuyaLanListenerService(
     // Throttle por device: gwId → última leitura bem-sucedida
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastQuery = new();
 
+    // Uma conexão TCP por device de cada vez: leitura periódica e comando vindo do HA
+    // disputam a mesma porta, e muitos devices (sobretudo 3.3) aceitam um cliente só.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _deviceLocks = new();
+
+    private SemaphoreSlim DeviceLock(string deviceId) => _deviceLocks.GetOrAdd(deviceId, _ => new SemaphoreSlim(1, 1));
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var configured = options.Devices.FindAll(d => !string.IsNullOrWhiteSpace(d.LocalKey));
+
+        var withoutKey = options.Devices.FindAll(d => string.IsNullOrWhiteSpace(d.LocalKey));
+        if (withoutKey.Count > 0)
+            logger.LogWarning(
+                "{Count} device(s) sem LocalKey serão ignorados (appsettings.local.json ausente?): {Names}",
+                withoutKey.Count, string.Join(", ", withoutKey.Select(d => d.DeviceName)));
 
         if (configured.Count == 0)
         {
@@ -41,6 +55,7 @@ public class TuyaLanListenerService(
             string.Join(", ", configured.Select(d => d.DeviceId)));
 
         discovery.OnDeviceSeen += OnDeviceWakeUp;
+        await SubscribeCommandsAsync(stoppingToken);
 
         await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
@@ -66,30 +81,52 @@ public class TuyaLanListenerService(
 
     private async Task ConnectAndQueryAsync(TuyaDevice device, TuyaDeviceConfig config)
     {
+        // Um comando em andamento já devolve o estado atualizado: a leitura periódica cede a vez.
+        var deviceLock = DeviceLock(config.DeviceId);
+        if (!await deviceLock.WaitAsync(0)) return;
+        try
+        {
+            await ConnectAndQueryLockedAsync(device, config);
+        }
+        finally
+        {
+            deviceLock.Release();
+        }
+    }
+
+    private async Task ConnectAndQueryLockedAsync(TuyaDevice device, TuyaDeviceConfig config)
+    {
         using var cts = new CancellationTokenSource(
             TimeSpan.FromSeconds(TuyaProtocolConstants.TcpOverallSecs));
+
+        // O protocolo configurado vence o anunciado: um device pode anunciar uma
+        // versão e aceitar outra nas conexões TCP, e a tabela é a fonte confiável.
+        var proto = ResolveProtocol(config, device);
         try
         {
             logger.LogDebug(
-                "TCP conectando a {Ip}:{Port} [{Name}] protocolo={Version}",
-                device.Ip, TuyaProtocolConstants.TcpLanPort, config.DeviceName, device.Version);
+                "TCP conectando a {Ip}:{Port} [{Name}] protocolo={Proto} (anunciado={Version})",
+                device.Ip, TuyaProtocolConstants.TcpLanPort, config.DeviceName, proto, device.Version);
 
-            using var tcp = new TcpClient();
-            tcp.NoDelay = true;
-            tcp.ReceiveTimeout = TuyaProtocolConstants.TcpTimeoutMs;
-            tcp.SendTimeout    = TuyaProtocolConstants.TcpTimeoutMs;
-            await tcp.ConnectAsync(device.Ip, TuyaProtocolConstants.TcpLanPort, cts.Token);
+            using var tcp = await ConnectTcpAsync(device.Ip, cts.Token);
 
             var stream   = tcp.GetStream();
             var localKey = Encoding.UTF8.GetBytes(config.LocalKey);
             var seq      = new SeqNo();
 
-            Dictionary<string, object> dps;
+            var dps = proto switch
+            {
+                TuyaProtocolVersion.V33 => await QueryDps33Async(stream, localKey, seq, config.DeviceId, cts.Token),
+                TuyaProtocolVersion.V35 => await QueryDps35Async(stream, localKey, seq, config.DeviceId, cts.Token),
+                _                       => await QueryDps34Async(stream, localKey, seq, config.DeviceId, cts.Token)
+            };
 
-            if (device.Version == TuyaProtocolConstants.Version33)
-                dps = await QueryDps33Async(stream, localKey, seq, config.DeviceId, cts.Token);
-            else
-                dps = await QueryDps34Async(stream, localKey, seq, config.DeviceId, cts.Token);
+            // Devices com mapa de DPs viram entidades genéricas no HA; os demais seguem o fluxo T&H.
+            if (config.Dps.Count > 0)
+            {
+                await haPublisher.PublishAsync(config, dps, cts.Token);
+                return;
+            }
 
             var reading = MapDpsToReading(dps);
             if (reading is null) return;
@@ -123,7 +160,8 @@ public class TuyaLanListenerService(
     // -------------------------------------------------------------------------
 
     private async Task<Dictionary<string, object>> QueryDps33Async(
-        NetworkStream stream, byte[] localKey, SeqNo seq, string deviceId, CancellationToken ct)
+        NetworkStream stream, byte[] localKey, SeqNo seq, string deviceId, CancellationToken ct,
+        bool acceptStatusPush = true)
     {
         await Task.Delay(TuyaProtocolConstants.TcpConnectSettleDelayMs33, ct);
 
@@ -131,7 +169,7 @@ public class TuyaLanListenerService(
         {
             await SendDpQuery33Async(stream, localKey, seq, deviceId, attempt, ct);
 
-            var result = await ReceiveDpsAsync(stream, localKey, isProto34: false, deviceId, ct);
+            var result = await ReceiveDpsAsync(stream, localKey, TuyaProtocolVersion.V33, deviceId, ct, acceptStatusPush);
             if (result.Dps is not null)
                 return result.Dps;
 
@@ -170,7 +208,7 @@ public class TuyaLanListenerService(
         logger.LogDebug("SessKey: START enviado");
 
         // Passo 2 — SESS_KEY_NEG_RESP
-        var resp = await ReceivePacketAsync(stream, isProto34: true, ct);
+        var resp = await ReceivePacketAsync(stream, TuyaProtocolVersion.V34, localKey, ct);
         if (resp.Cmd != TuyaProtocolConstants.Cmd.SessKeyResp)
             throw new InvalidOperationException(
                 $"Esperado CMD {TuyaProtocolConstants.Cmd.SessKeyResp}, recebido {resp.Cmd}");
@@ -201,7 +239,8 @@ public class TuyaLanListenerService(
     }
 
     private async Task<Dictionary<string, object>> QueryDps34WithSessionAsync(
-        NetworkStream stream, byte[] sessionKey, SeqNo seq, string deviceId, CancellationToken ct)
+        NetworkStream stream, byte[] sessionKey, SeqNo seq, string deviceId, CancellationToken ct,
+        bool acceptStatusPush = true)
     {
         var t       = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
         var jsonObj = new { gwId = deviceId, devId = deviceId, uid = deviceId, t };
@@ -211,25 +250,124 @@ public class TuyaLanListenerService(
             stream, BuildPacket34(TuyaProtocolConstants.Cmd.DpQueryNew, jsonBytes, sessionKey, seq), ct);
         logger.LogDebug("DP_QUERY_NEW (3.4) enviado para {DeviceId}", deviceId);
 
-        var result = await ReceiveDpsAsync(stream, sessionKey, isProto34: true, deviceId, ct);
+        var result = await ReceiveDpsAsync(stream, sessionKey, TuyaProtocolVersion.V34, deviceId, ct, acceptStatusPush);
         return result.Dps ?? throw new InvalidOperationException(
             $"Nenhuma resposta com DPs válidos do device 3.4 {deviceId}");
     }
 
     // -------------------------------------------------------------------------
+    // Protocolo 3.5 — mesmo handshake de 3 passos do 3.4, envelope GCM
+    // -------------------------------------------------------------------------
+
+    private async Task<Dictionary<string, object>> QueryDps35Async(
+        NetworkStream stream, byte[] localKey, SeqNo seq, string deviceId, CancellationToken ct)
+    {
+        var sessionKey = await NegotiateSessionKey35Async(stream, localKey, seq, ct);
+        return await QueryDps35WithSessionAsync(stream, sessionKey, seq, deviceId, ct);
+    }
+
+    private async Task<Dictionary<string, object>> QueryDps35WithSessionAsync(
+        NetworkStream stream, byte[] sessionKey, SeqNo seq, string deviceId, CancellationToken ct,
+        bool acceptStatusPush = true)
+    {
+        // No 3.5 o DP_QUERY canônico é o 0x10 com payload vazio, como no 3.4.
+        var jsonBytes = "{}"u8.ToArray();
+        await SendPacketAsync(
+            stream, BuildPacket35(TuyaProtocolConstants.Cmd.DpQueryNew, jsonBytes, sessionKey, seq), ct);
+        logger.LogDebug("DP_QUERY_NEW (3.5) enviado para {DeviceId}", deviceId);
+
+        var result = await ReceiveDpsAsync(stream, sessionKey, TuyaProtocolVersion.V35, deviceId, ct, acceptStatusPush);
+        return result.Dps ?? throw new InvalidOperationException(
+            $"Nenhuma resposta com DPs válidos do device 3.5 {deviceId}");
+    }
+
+    private async Task<byte[]> NegotiateSessionKey35Async(
+        NetworkStream stream, byte[] localKey, SeqNo seq, CancellationToken ct)
+    {
+        var localNonce = Encoding.UTF8.GetBytes(TuyaProtocolConstants.LocalNonce34); // 16 bytes
+
+        // Passo 1 — SESS_KEY_NEG_START
+        await SendPacketAsync(
+            stream, BuildPacket35(TuyaProtocolConstants.Cmd.SessKeyStart, localNonce, localKey, seq), ct);
+        logger.LogDebug("SessKey 3.5: START enviado");
+
+        // Passo 2 — SESS_KEY_NEG_RESP. No 3.5 o payload já vem decifrado pela
+        // camada de recepção: a tag GCM é verificada lá, junto com o AAD.
+        var resp = await ReceivePacketAsync(stream, TuyaProtocolVersion.V35, localKey, ct);
+        if (resp.Cmd != TuyaProtocolConstants.Cmd.SessKeyResp)
+            throw new InvalidOperationException(
+                $"Esperado CMD {TuyaProtocolConstants.Cmd.SessKeyResp}, recebido {resp.Cmd}");
+
+        if (resp.Payload.Length < 48)
+            throw new InvalidOperationException(
+                $"SESS_KEY_NEG_RESP 3.5 curto demais: {resp.Payload.Length} bytes (esperado ≥ 48)");
+
+        var remoteNonce  = resp.Payload[..16];
+        var theirHmac    = resp.Payload[16..48];
+        var expectedHmac = HMACSHA256.HashData(localKey, localNonce);
+
+        if (!CryptographicOperations.FixedTimeEquals(theirHmac, expectedHmac))
+            throw new InvalidOperationException("HMAC do SESS_KEY_NEG_RESP 3.5 inválido — local_key incorreta?");
+
+        logger.LogDebug("SessKey 3.5: RESP recebido, HMAC OK");
+
+        // Passo 3 — SESS_KEY_NEG_FINISH
+        var finishPayload = HMACSHA256.HashData(localKey, remoteNonce);
+        await SendPacketAsync(
+            stream, BuildPacket35(TuyaProtocolConstants.Cmd.SessKeyFinish, finishPayload, localKey, seq), ct);
+        logger.LogDebug("SessKey 3.5: FINISH enviado");
+
+        // A chave de sessão sai de localNonce XOR remoteNonce cifrado com a
+        // local_key — mas no 3.5 a cifra é GCM com localNonce[:12], não o ECB
+        // do 3.4. Só o keystream importa aqui, então a tag é descartada.
+        var xored = new byte[16];
+        for (var i = 0; i < 16; i++) xored[i] = (byte)(localNonce[i] ^ remoteNonce[i]);
+
+        var sessionKey = new byte[16];
+        var tag        = new byte[TuyaProtocolConstants.GcmTagSize];
+        using (var gcm = new AesGcm(localKey, TuyaProtocolConstants.GcmTagSize))
+            gcm.Encrypt(localNonce.AsSpan(0, TuyaProtocolConstants.GcmNonceSize), xored, sessionKey, tag);
+
+        logger.LogDebug("SessKey 3.5: chave de sessão derivada ({Len} bytes)", sessionKey.Length);
+        return sessionKey;
+    }
+
+    /// <summary>
+    /// Versão do protocolo a usar na conexão TCP. A configuração explícita vence
+    /// o que o device anuncia por UDP; sem configuração, cai no anunciado, e o
+    /// padrão histórico (3.4) cobre um anúncio ausente ou desconhecido.
+    /// </summary>
+    private static TuyaProtocolVersion ResolveProtocol(TuyaDeviceConfig config, TuyaDevice device)
+        => ParseProtocol(config.Protocol) ?? ParseProtocol(device.Version) ?? TuyaProtocolVersion.V34;
+
+    private static TuyaProtocolVersion? ParseProtocol(string? version) => version?.Trim() switch
+    {
+        TuyaProtocolConstants.Version33 => TuyaProtocolVersion.V33,
+        TuyaProtocolConstants.Version34 => TuyaProtocolVersion.V34,
+        TuyaProtocolConstants.Version35 => TuyaProtocolVersion.V35,
+        _                               => null
+    };
+
+    // -------------------------------------------------------------------------
     // Recepção de DPs (comum para 3.3 e 3.4)
     // -------------------------------------------------------------------------
 
+    /// <param name="acceptStatusPush">
+    /// Aceita o STATUS (CMD 8) que o device envia espontaneamente. Depois de um comando ele traz
+    /// só os DPs alterados, então quem precisa do estado completo passa <c>false</c> e espera a
+    /// resposta da consulta.
+    /// </param>
     private async Task<(Dictionary<string, object>? Dps, bool ShouldRetry)> ReceiveDpsAsync(
-        NetworkStream stream, byte[] key, bool isProto34, string deviceId, CancellationToken ct)
+        NetworkStream stream, byte[] key, TuyaProtocolVersion proto, string deviceId, CancellationToken ct,
+        bool acceptStatusPush = true)
     {
         const int maxAttempts = 4;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            var resp = await ReceivePacketAsync(stream, isProto34, ct);
+            var resp = await ReceivePacketAsync(stream, proto, key, ct);
 
-            if (resp.Cmd != TuyaProtocolConstants.Cmd.Status &&
+            if ((resp.Cmd != TuyaProtocolConstants.Cmd.Status || !acceptStatusPush) &&
                 resp.Cmd != TuyaProtocolConstants.Cmd.DpQuery &&
                 resp.Cmd != TuyaProtocolConstants.Cmd.DpQueryNew)
             {
@@ -240,7 +378,11 @@ public class TuyaLanListenerService(
             byte[] plaintext;
             try
             {
-                plaintext = AesEcbDecrypt(resp.Payload, key);
+                // No 3.5 o payload já chega decifrado e autenticado: o AAD do GCM
+                // são bytes do header, que não sobrevivem ao ReceivePacketAsync.
+                plaintext = proto == TuyaProtocolVersion.V35
+                    ? resp.Payload
+                    : AesEcbDecrypt(resp.Payload, key);
             }
             catch
             {
@@ -254,7 +396,7 @@ public class TuyaLanListenerService(
 
             if (!json.StartsWith('{'))
             {
-                var retryable = !isProto34 && IsRetryable33Error(json);
+                var retryable = proto == TuyaProtocolVersion.V33 && IsRetryable33Error(json);
                 logger.LogDebug(
                     "Pacote CMD={Cmd} não é JSON válido, ignorando: {Preview}{RetryHint}",
                     resp.Cmd,
@@ -309,167 +451,6 @@ public class TuyaLanListenerService(
                 JsonValueKind.False  => false,
                 _                   => p.Value.GetRawText()
             }));
-
-    // -------------------------------------------------------------------------
-    // Empacotamento 55AA — protocolo 3.3 (CRC32)
-    // -------------------------------------------------------------------------
-
-    private byte[] BuildPacket33(uint cmd, byte[] payload, byte[] key, SeqNo seq)
-    {
-        // CMD=10 (DP_QUERY) e similares não levam prefixo — device espera JSON puro.
-        // CMD=7 (CONTROL) e outros levam "3.3" + 12 nulos antes da encriptação.
-        byte[] toEncrypt = TuyaProtocolConstants.NoPrefixCmds33.Contains(cmd)
-            ? payload
-            : [.. TuyaProtocolConstants.VersionHeader33, .. payload];
-        var encrypted = AesEcbEncrypt(toEncrypt, key);
-
-        var length = (uint)(encrypted.Length + TuyaProtocolConstants.CrcEndSize);
-
-        var header = new byte[TuyaProtocolConstants.HeaderSize];
-        WriteUInt32BE(header, 0, TuyaProtocolConstants.Prefix55AA);
-        WriteUInt32BE(header, 4, (uint)seq.Next());
-        WriteUInt32BE(header, 8, cmd);
-        WriteUInt32BE(header, 12, length);
-
-        var body = new byte[header.Length + encrypted.Length];
-        header.CopyTo(body, 0);
-        encrypted.CopyTo(body, header.Length);
-
-        var crc         = Crc32(body);
-        var crcBytes    = new byte[4];
-        var suffixBytes = new byte[4];
-        WriteUInt32BE(crcBytes, 0, crc);
-        WriteUInt32BE(suffixBytes, 0, TuyaProtocolConstants.Suffix55AA);
-
-        return [.. body, .. crcBytes, .. suffixBytes];
-    }
-
-    // -------------------------------------------------------------------------
-    // Empacotamento 55AA — protocolo 3.4 (HMAC-SHA256)
-    // -------------------------------------------------------------------------
-
-    private byte[] BuildPacket34(uint cmd, byte[] payload, byte[] key, SeqNo seq)
-    {
-        var toEncrypt = TuyaProtocolConstants.NoPrefixCmds34.Contains(cmd)
-            ? payload
-            : [.. TuyaProtocolConstants.VersionHeader34, .. payload];
-
-        var encrypted = AesEcbEncrypt(toEncrypt, key);
-        var length    = (uint)(encrypted.Length + TuyaProtocolConstants.HmacEndSize);
-
-        var header = new byte[TuyaProtocolConstants.HeaderSize];
-        WriteUInt32BE(header, 0, TuyaProtocolConstants.Prefix55AA);
-        WriteUInt32BE(header, 4, (uint)seq.Next());
-        WriteUInt32BE(header, 8, cmd);
-        WriteUInt32BE(header, 12, length);
-
-        var dataForHmac = new byte[header.Length + encrypted.Length];
-        header.CopyTo(dataForHmac, 0);
-        encrypted.CopyTo(dataForHmac, header.Length);
-
-        var hmac        = HMACSHA256.HashData(key, dataForHmac);
-        var suffixBytes = new byte[4];
-        WriteUInt32BE(suffixBytes, 0, TuyaProtocolConstants.Suffix55AA);
-
-        return [.. dataForHmac, .. hmac, .. suffixBytes];
-    }
-
-    // -------------------------------------------------------------------------
-    // Recepção de pacote TCP — suporta 3.3 (CRC32) e 3.4 (HMAC)
-    // -------------------------------------------------------------------------
-
-    private async Task<(uint Cmd, byte[] Payload)> ReceivePacketAsync(
-        NetworkStream stream, bool isProto34, CancellationToken ct)
-    {
-        var header = await ReadExactAsync(stream, TuyaProtocolConstants.HeaderSize, ct);
-        var prefix = ReadUInt32BE(header, 0);
-        var cmd    = ReadUInt32BE(header, 8);
-        var length = ReadUInt32BE(header, 12);
-
-        if (prefix != TuyaProtocolConstants.Prefix55AA)
-            throw new InvalidOperationException($"Prefix inválido: 0x{prefix:X8}");
-
-        var rest = await ReadExactAsync(stream, (int)length, ct);
-        // rest = retcode(4) + encrypted_payload + (HMAC(32) ou CRC(4)) + suffix(4)
-        var endSize    = isProto34 ? TuyaProtocolConstants.HmacEndSize : TuyaProtocolConstants.CrcEndSize;
-        var payloadEnd = rest.Length - endSize;
-        var encrypted  = rest[TuyaProtocolConstants.RetcodeSize..payloadEnd];
-
-        logger.LogDebug("Recebido CMD={Cmd} len={Len} proto={Proto}", cmd, encrypted.Length,
-            isProto34 ? "3.4" : "3.3");
-        return (cmd, encrypted);
-    }
-
-    private static async Task<byte[]> ReadExactAsync(NetworkStream stream, int count, CancellationToken ct)
-    {
-        var buf    = new byte[count];
-        var offset = 0;
-        while (offset < count)
-        {
-            var read = await stream.ReadAsync(buf.AsMemory(offset, count - offset), ct);
-            if (read == 0) throw new EndOfStreamException("Conexão encerrada pelo device.");
-            offset += read;
-        }
-        return buf;
-    }
-
-    private static Task SendPacketAsync(NetworkStream stream, byte[] packet, CancellationToken ct)
-        => stream.WriteAsync(packet, ct).AsTask();
-
-    // -------------------------------------------------------------------------
-    // Criptografia AES-128-ECB
-    // -------------------------------------------------------------------------
-
-    private static byte[] AesEcbEncrypt(byte[] data, byte[] key)
-    {
-        using var aes = Aes.Create();
-        aes.Mode = CipherMode.ECB; aes.Padding = PaddingMode.PKCS7; aes.Key = key;
-        using var enc = aes.CreateEncryptor();
-        return enc.TransformFinalBlock(data, 0, data.Length);
-    }
-
-    private static byte[] AesEcbEncryptRaw(byte[] data, byte[] key)
-    {
-        using var aes = Aes.Create();
-        aes.Mode = CipherMode.ECB; aes.Padding = PaddingMode.None; aes.Key = key;
-        using var enc = aes.CreateEncryptor();
-        return enc.TransformFinalBlock(data, 0, data.Length);
-    }
-
-    private static byte[] AesEcbDecrypt(byte[] data, byte[] key)
-    {
-        using var aes = Aes.Create();
-        aes.Mode = CipherMode.ECB; aes.Padding = PaddingMode.PKCS7; aes.Key = key;
-        using var dec = aes.CreateDecryptor();
-        return dec.TransformFinalBlock(data, 0, data.Length);
-    }
-
-    // -------------------------------------------------------------------------
-    // CRC32 (protocolo 3.3)
-    // -------------------------------------------------------------------------
-
-    private static readonly uint[] Crc32Table = BuildCrc32Table();
-
-    private static uint[] BuildCrc32Table()
-    {
-        var table = new uint[256];
-        for (uint i = 0; i < 256; i++)
-        {
-            var crc = i;
-            for (var j = 0; j < 8; j++)
-                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
-            table[i] = crc;
-        }
-        return table;
-    }
-
-    private static uint Crc32(byte[] data)
-    {
-        var crc = 0xFFFFFFFFu;
-        foreach (var b in data)
-            crc = (crc >> 8) ^ Crc32Table[(crc ^ b) & 0xFF];
-        return crc ^ 0xFFFFFFFFu;
-    }
 
     // -------------------------------------------------------------------------
     // DP → SensorReading
@@ -562,6 +543,20 @@ public class TuyaLanListenerService(
     // Helpers
     // -------------------------------------------------------------------------
 
+    /// <summary>
+    /// Rejeita um frame cujo campo de tamanho excede <see cref="TuyaProtocolConstants.MaxFrameSize"/>,
+    /// antes de qualquer alocação. O `length` vem do header, que é controlado pelo
+    /// outro lado da conexão: sem este teto, um valor forjado viraria um
+    /// <c>new byte[length]</c> de centenas de MB. A conta é feita em <c>long</c>
+    /// para que a soma com o header não sofra wraparound.
+    /// </summary>
+    private static void EnsureFrameFits(uint length, int overhead)
+    {
+        if ((long)length + overhead > TuyaProtocolConstants.MaxFrameSize)
+            throw new InvalidOperationException(
+                $"Frame excede o limite de {TuyaProtocolConstants.MaxFrameSize} bytes (length={length})");
+    }
+
     private static byte[] StripVersionHeader(byte[] data)
     {
         if (data.Length <= 15) return data;
@@ -580,6 +575,22 @@ public class TuyaLanListenerService(
         buf[offset + 2] = (byte)(value >> 8);
         buf[offset + 3] = (byte)value;
     }
+}
+
+/// <summary>
+/// Versão do protocolo LAN usada numa conexão. Define o envelope do frame,
+/// o campo de integridade e se há negociação de sessão.
+/// </summary>
+enum TuyaProtocolVersion
+{
+    /// <summary>Envelope 55AA, AES-ECB com a local_key, CRC32. Sem sessão.</summary>
+    V33,
+
+    /// <summary>Envelope 55AA, AES-ECB com chave de sessão, HMAC-SHA256.</summary>
+    V34,
+
+    /// <summary>Envelope 6699, AES-GCM com chave de sessão. Tag autentica o frame.</summary>
+    V35
 }
 
 sealed class SeqNo

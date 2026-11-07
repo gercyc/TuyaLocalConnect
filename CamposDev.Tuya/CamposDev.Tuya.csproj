@@ -7,7 +7,7 @@
     <Title>CamposDEV Tuya LAN Lib</Title>
     <Company>Campos Dev</Company>
     <Product>CamposDev.Framework</Product>
-    <Description>Serviços de descoberta e leitura de dispositivos Tuya via protocolo LAN 55AA (UDP discovery + TCP 3.4)</Description>
+    <Description>Serviços de descoberta e leitura de dispositivos Tuya via protocolo LAN (UDP discovery + TCP 3.3/3.4/3.5)</Description>
     <PackageProjectUrl>https://camposdev.ind.br</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
@@ -16,6 +16,11 @@
     <PackageReference Include="CamposDev.Mqtt" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Expõe os tipos internos (constantes de protocolo, framing) ao projeto de testes. -->
+    <InternalsVisibleTo Include="CamposDev.Tuya.Tests" />
   </ItemGroup>
 
 </Project>

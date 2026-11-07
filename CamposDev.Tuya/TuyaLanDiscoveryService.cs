@@ -11,6 +11,8 @@ namespace CamposDev.Tuya;
 /// <summary>
 /// Escuta broadcasts UDP Tuya LAN (porta 6667) e mantém um inventário de dispositivos
 /// descobertos na rede. O payload de anúncio é cifrado com a chave nonce hardcoded Tuya.
+/// Entende os dois envelopes que convivem nessa porta: 55AA (3.3/3.4, AES-ECB) e
+/// 6699 (3.5, AES-GCM).
 /// </summary>
 public class TuyaLanDiscoveryService(
     ILogger<TuyaLanDiscoveryService> logger)
@@ -99,17 +101,27 @@ public class TuyaLanDiscoveryService(
 
     private TuyaAnnouncement? TryDecode(byte[] data)
     {
+        if (data.Length < 4) return null;
+
+        // Devices 3.5 anunciam na MESMA porta 6667, mas com o envelope próprio
+        // (prefixo 00006699 + AES-GCM). Ignorar isso faz eles nunca aparecerem,
+        // mesmo estando ativos: o anúncio chega e é descartado em silêncio.
+        // A chave do broadcast é a mesma nos dois formatos.
+        var prefix = ReadUInt32BE(data, 0);
+        if (prefix == TuyaProtocolConstants.Prefix6699) return TryDecode35(data);
+
         const int minSize = TuyaProtocolConstants.HeaderSize
                           + TuyaProtocolConstants.RetcodeSize
                           + TuyaProtocolConstants.CrcEndSize;
         if (data.Length < minSize) return null;
-
-        var prefix = ReadUInt32BE(data, 0);
         if (prefix != TuyaProtocolConstants.Prefix55AA) return null;
 
-        var length        = ReadUInt32BE(data, 12);
+        // Conta em long antes do cast: um `length` forjado (uint alto) viraria um
+        // int negativo, e `expectedTotal` menor que data.Length passaria pela
+        // checagem abaixo levando a um range inválido no slice seguinte.
+        var length = ReadUInt32BE(data, 12);
+        if ((long)TuyaProtocolConstants.HeaderSize + length > data.Length) return null;
         var expectedTotal = TuyaProtocolConstants.HeaderSize + (int)length;
-        if (data.Length < expectedTotal) return null;
 
         var ciphertext = data[
             (TuyaProtocolConstants.HeaderSize + TuyaProtocolConstants.RetcodeSize)
@@ -127,6 +139,57 @@ public class TuyaLanDiscoveryService(
             var plaintext = decryptor.TransformFinalBlock(ciphertext, 0, ciphertext.Length);
             var json      = Encoding.UTF8.GetString(plaintext).TrimEnd('\0');
 
+            if (!json.StartsWith('{')) return null;
+
+            return JsonSerializer.Deserialize<TuyaAnnouncement>(json, JsonOpts);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Decodifica um anúncio no envelope 6699 (protocolo 3.5):
+    /// magic(4) + flags(2) + seq(4) + cmd(4) + len(4) + nonce(12) + ct + tag(16) + suffix(4).
+    /// O AAD do GCM são os 14 bytes entre o magic e o nonce.
+    /// </summary>
+    private TuyaAnnouncement? TryDecode35(byte[] data)
+    {
+        const int minSize = TuyaProtocolConstants.Header35Size
+                          + TuyaProtocolConstants.GcmNonceSize
+                          + TuyaProtocolConstants.GcmTagSize;
+        if (data.Length < minSize) return null;
+
+        var length = ReadUInt32BE(data, TuyaProtocolConstants.LengthOffset35);
+        if (length < TuyaProtocolConstants.GcmNonceSize + TuyaProtocolConstants.GcmTagSize) return null;
+        // Conta em long: `length` é uint vindo do header, e a soma em aritmética
+        // uint sofreria wraparound num valor forjado, passando pela checagem.
+        if ((long)TuyaProtocolConstants.Header35Size + length > data.Length) return null;
+
+        var ctLen = (int)length - TuyaProtocolConstants.GcmNonceSize - TuyaProtocolConstants.GcmTagSize;
+
+        try
+        {
+            var nonce = data.AsSpan(TuyaProtocolConstants.Header35Size, TuyaProtocolConstants.GcmNonceSize);
+            var ct    = data.AsSpan(
+                TuyaProtocolConstants.Header35Size + TuyaProtocolConstants.GcmNonceSize, ctLen);
+            var tag   = data.AsSpan(
+                TuyaProtocolConstants.Header35Size + TuyaProtocolConstants.GcmNonceSize + ctLen,
+                TuyaProtocolConstants.GcmTagSize);
+            var aad   = data.AsSpan(4, TuyaProtocolConstants.Aad35Size);
+
+            var plaintext = new byte[ctLen];
+            using var gcm = new AesGcm(NonceKey, TuyaProtocolConstants.GcmTagSize);
+            gcm.Decrypt(nonce, ct, tag, plaintext, aad);
+
+            // Respostas trazem um retcode de 4 bytes zerados antes do JSON.
+            var body = plaintext.Length > 4 && plaintext[0] == 0 && plaintext[1] == 0 &&
+                       plaintext[2] == 0 && plaintext[3] == 0
+                ? plaintext[4..]
+                : plaintext;
+
+            var json = Encoding.UTF8.GetString(body).TrimEnd('\0');
             if (!json.StartsWith('{')) return null;
 
             return JsonSerializer.Deserialize<TuyaAnnouncement>(json, JsonOpts);

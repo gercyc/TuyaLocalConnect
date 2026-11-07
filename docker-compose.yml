@@ -1,26 +1,21 @@
 services:
   tuya-local-connect:
-    build:
-      context: .
-      dockerfile: MqttThSensorWorker/Dockerfile
-    image: tuya-local-connect:latest
+    # Pull da imagem publicada no registry do homelab.
+    image: homeserver:32081/tuya-local-connect:latest
+    # Para gerar a imagem localmente, descomente o bloco abaixo e troque a imagem
+    # para "tuya-local-connect:latest".
+    # build:
+    #   context: .
+    #   dockerfile: MqttThSensorWorker/Dockerfile
     container_name: tuya-local-connect
     restart: unless-stopped
+    # Rede do host: o discovery depende de broadcast UDP (6667) na LAN dos devices.
     network_mode: host
     environment:
       - DOTNET_ENVIRONMENT=Production
-      # Dispositivo 1 - Ajustar conforme necessidade, obter dados unicos atraves da plataforma tuya
-      - TuyaApi__Devices__0__DeviceId=eb169bae589e44c6b3fieg
-      - TuyaApi__Devices__0__DeviceName=T&H Sensor Mobile
-      - TuyaApi__Devices__0__DeviceModel=RMW002
-      - TuyaApi__Devices__0__LocalKey=Dn@-/=JD^)M>CMdT
-      - TuyaApi__Devices__0__DeviceIp=192.168.101.109
-      # Dispositivo 2
-      - TuyaApi__Devices__1__DeviceId=ebf08db80cc32c090bhjvg
-      - TuyaApi__Devices__1__DeviceName=Sensor LCD
-      - TuyaApi__Devices__1__DeviceModel=GRC0002
-      - TuyaApi__Devices__1__LocalKey=5P1a;XEeHR;jMN2F
-      - TuyaApi__Devices__1__DeviceIp=192.168.101.72
+      # Devices e broker vêm do appsettings.json embutido na imagem; as LocalKeys, do
+      # appsettings.local.json (fora do git, copiado para a imagem no build).
+      # Variáveis TuyaApi__Devices__N__* sobrescrevem o device da posição N — use só para ajustes pontuais.
     volumes:
       - tuya-logs:/app/Logs
 
