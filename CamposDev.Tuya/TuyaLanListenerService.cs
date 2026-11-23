@@ -57,7 +57,7 @@ public partial class TuyaLanListenerService(
         discovery.OnDeviceSeen += OnDeviceWakeUp;
         await SubscribeCommandsAsync(stoppingToken);
 
-        await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        await PollSilentDevicesAsync(configured, stoppingToken);
 
         discovery.OnDeviceSeen -= OnDeviceWakeUp;
         logger.LogInformation("TuyaLanListenerService encerrado.");
@@ -68,12 +68,60 @@ public partial class TuyaLanListenerService(
         var config = options.FindDevice(device.GwId);
         if (config is null || string.IsNullOrWhiteSpace(config.LocalKey)) return;
 
-        var last = _lastQuery.GetOrAdd(device.GwId, DateTimeOffset.MinValue);
+        TryQuery(device, config);
+    }
+
+    /// <summary>
+    /// Dispara a leitura respeitando o intervalo mínimo por device. Broadcast e polling
+    /// passam por aqui, então um device nunca é consultado duas vezes no mesmo intervalo.
+    /// </summary>
+    private void TryQuery(TuyaDevice device, TuyaDeviceConfig config)
+    {
+        var last = _lastQuery.GetOrAdd(config.DeviceId, DateTimeOffset.MinValue);
         if (DateTimeOffset.Now - last < TuyaProtocolConstants.MinQueryInterval) return;
 
-        _lastQuery[device.GwId] = DateTimeOffset.Now;
+        _lastQuery[config.DeviceId] = DateTimeOffset.Now;
         _ = Task.Run(() => ConnectAndQueryAsync(device, config));
     }
+
+    // -------------------------------------------------------------------------
+    // Polling de devices que não anunciam via UDP
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Consulta periodicamente, pelo <c>DeviceIp</c> configurado, os devices genéricos (com
+    /// <c>Dps</c>) que não mandaram broadcast recente. Alguns devices (ex.: medidor PJ1103C)
+    /// aceitam TCP na 6668 mas nunca anunciam na porta 6667. Sensores a bateria (sem
+    /// <c>Dps</c>) ficam de fora: dormem e só aceitam conexão logo após o broadcast.
+    /// </summary>
+    private async Task PollSilentDevicesAsync(List<TuyaDeviceConfig> configured, CancellationToken stoppingToken)
+    {
+        var pollable = configured.FindAll(d => d.Dps.Count > 0 && !string.IsNullOrWhiteSpace(d.DeviceIp));
+        using var timer = new PeriodicTimer(TuyaProtocolConstants.MinQueryInterval);
+
+        try
+        {
+            do
+            {
+                foreach (var config in pollable)
+                {
+                    if (IsAnnouncingRecently(config.DeviceId)) continue;
+
+                    var device = new TuyaDevice(config.DeviceId, config.DeviceIp!, "", "", true, DateTimeOffset.Now);
+                    TryQuery(device, config);
+                }
+            }
+            while (await timer.WaitForNextTickAsync(stoppingToken));
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Encerramento normal do worker.
+        }
+    }
+
+    private bool IsAnnouncingRecently(string deviceId)
+        => discovery.Devices.TryGetValue(deviceId, out var seen)
+           && DateTimeOffset.Now - seen.SeenAt < TuyaProtocolConstants.BroadcastStaleAfter;
 
     // -------------------------------------------------------------------------
     // TCP flow: connect → (negociar sessão se 3.4) → query DPs → publish

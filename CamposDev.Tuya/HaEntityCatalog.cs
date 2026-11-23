@@ -109,6 +109,28 @@ internal static class HaEntityCatalog
             ["cur_voltage"] = new(HaComponent.Sensor, "Voltage", "voltage", "V", "measurement", Scale: 0.1),
             ["add_ele"]     = new(HaComponent.Sensor, "Electricity", "energy", "kWh", "total_increasing", Scale: 0.001),
 
+            // Medidor bidirecional de 2 canais (PJ1103C) -------------------------
+            // Escalas do tuya-local (pj1103a): potência /10, tensão /10, corrente /1000,
+            // energia /100, frequência e fator de potência /100. Os códigos com erro de
+            // grafia (forword, reserse) são os que o firmware publica.
+            ["power_a"]              = new(HaComponent.Sensor, "Power A", "power", "W", "measurement", Scale: 0.1),
+            ["power_b"]              = new(HaComponent.Sensor, "Power B", "power", "W", "measurement", Scale: 0.1),
+            ["total_power"]          = new(HaComponent.Sensor, "Total Power", "power", "W", "measurement", Scale: 0.1),
+            ["direction_a"]          = new(HaComponent.Sensor, "Direction A", Icon: "mdi:swap-horizontal"),
+            ["direction_b"]          = new(HaComponent.Sensor, "Direction B", Icon: "mdi:swap-horizontal"),
+            ["voltage_a"]            = new(HaComponent.Sensor, "Voltage", "voltage", "V", "measurement", Scale: 0.1),
+            ["current_a"]            = new(HaComponent.Sensor, "Current A", "current", "A", "measurement", Scale: 0.001),
+            ["current_b"]            = new(HaComponent.Sensor, "Current B", "current", "A", "measurement", Scale: 0.001),
+            ["freq"]                 = new(HaComponent.Sensor, "Frequency", "frequency", "Hz", "measurement", Scale: 0.01),
+            ["power_factor"]         = new(HaComponent.Sensor, "Power Factor A", "power_factor", StateClass: "measurement", Scale: 0.01),
+            ["power_factor_b"]       = new(HaComponent.Sensor, "Power Factor B", "power_factor", StateClass: "measurement", Scale: 0.01),
+            ["energy_forword_a"]     = new(HaComponent.Sensor, "Energy A", "energy", "kWh", "total_increasing", Scale: 0.01),
+            ["energy_reverse_a"]     = new(HaComponent.Sensor, "Energy Returned A", "energy", "kWh", "total_increasing", Scale: 0.01),
+            ["energy_forword_b"]     = new(HaComponent.Sensor, "Energy B", "energy", "kWh", "total_increasing", Scale: 0.01),
+            ["energy_reserse_b"]     = new(HaComponent.Sensor, "Energy Returned B", "energy", "kWh", "total_increasing", Scale: 0.01),
+            ["forward_energy_total"] = new(HaComponent.Sensor, "Total Energy", "energy", "kWh", "total_increasing", Scale: 0.01),
+            ["reverse_energy_total"] = new(HaComponent.Sensor, "Total Energy Returned", "energy", "kWh", "total_increasing", Scale: 0.01),
+
             // Sensores a bateria (mcs e afins) ------------------------------------
             ["doorcontact_state"]  = new(HaComponent.BinarySensor, "Door", DeviceClass: "door"),
             ["battery_percentage"] = new(HaComponent.Sensor, "Battery", "battery", "%", "measurement", EntityCategory: Diagnostic)

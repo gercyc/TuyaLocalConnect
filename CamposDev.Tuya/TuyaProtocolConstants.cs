@@ -164,6 +164,12 @@ internal static class TuyaProtocolConstants
     /// <summary>Intervalo mínimo entre consultas ao mesmo device.</summary>
     public static readonly TimeSpan MinQueryInterval = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Sem broadcast UDP há mais que isso, um device genérico com <c>DeviceIp</c> passa a ser
+    /// consultado por polling. Devices Tuya acordados anunciam a cada poucos segundos.
+    /// </summary>
+    public static readonly TimeSpan BroadcastStaleAfter = TimeSpan.FromMinutes(1);
+
     // -------------------------------------------------------------------------
     // Negociação de sessão (protocolo 3.4)
     // -------------------------------------------------------------------------
