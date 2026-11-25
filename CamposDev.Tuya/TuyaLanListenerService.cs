@@ -34,9 +34,19 @@ public partial class TuyaLanListenerService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var configured = options.Devices.FindAll(d => !string.IsNullOrWhiteSpace(d.LocalKey));
+        // Entrada sem DeviceId aparece quando um device sai do appsettings.json mas a
+        // chave dele continua no ambiente (TuyaApi__Devices__<N>__LocalKey): o binding
+        // cria um Devices[N] só com a LocalKey. Não é device nenhum, então fica de fora.
+        var orphans = options.Devices.FindAll(d => string.IsNullOrWhiteSpace(d.DeviceId));
+        if (orphans.Count > 0)
+            logger.LogWarning(
+                "{Count} entrada(s) em TuyaApi.Devices sem DeviceId ignorada(s) — LocalKey órfã no ambiente/secret?",
+                orphans.Count);
 
-        var withoutKey = options.Devices.FindAll(d => string.IsNullOrWhiteSpace(d.LocalKey));
+        var devices = options.Devices.FindAll(d => !string.IsNullOrWhiteSpace(d.DeviceId));
+        var configured = devices.FindAll(d => !string.IsNullOrWhiteSpace(d.LocalKey));
+
+        var withoutKey = devices.FindAll(d => string.IsNullOrWhiteSpace(d.LocalKey));
         if (withoutKey.Count > 0)
             logger.LogWarning(
                 "{Count} device(s) sem LocalKey serão ignorados (appsettings.local.json ausente?): {Names}",
