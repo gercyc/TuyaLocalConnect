@@ -12,6 +12,7 @@
 #include "device_poller.h"
 #include "device_store.h"
 #include "mqtt_publisher.h"
+#include "ota.h"
 #include "settings_store.h"
 #include "web_api.h"
 #include "wifi_manager.h"
@@ -37,11 +38,13 @@ void setup() {
   wifi_manager::begin(s);
   mqtt.begin(s);
   web_api::begin(s, store, poller, mqtt);
+  ota::begin(s);
   poller.begin(s.pollSeconds);
 }
 
 void loop() {
   wifi_manager::loop();
+  ota::loop();
   web_api::loop();
   mqtt.loop();
   delay(2);

@@ -10,6 +10,7 @@
  *    POST   /api/settings        grava settings e reinicia
  *    POST   /api/restart         reinicia
  *    POST   /api/factory-reset   apaga NVS e reinicia
+ *    POST   /api/firmware        upload multipart do firmware.bin (OTA)
  *
  *  Com senha de admin configurada, tudo exige HTTP Basic (usuario
  *  "admin"). A local_key nunca sai pela API.

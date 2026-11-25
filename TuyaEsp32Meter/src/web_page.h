@@ -58,7 +58,7 @@ button:disabled{opacity:.5;cursor:wait}
 .meter-head h3{margin:0;font:700 18px/1.2 var(--sans)}
 .meter-head .meta{font:12px/1.4 var(--mono);color:var(--muted);overflow-wrap:anywhere}
 .meter-head>div:first-child,.meter-body>*{min-width:0}
-.meter-body{display:grid;grid-template-columns:minmax(220px,1.1fr) 1fr 1fr;gap:0}
+.meter-body{display:grid;grid-template-columns:minmax(220px,1.1fr) repeat(var(--cols,2),1fr);gap:0}
 .hero{padding:20px 18px;border-right:1px solid var(--rule);display:flex;flex-direction:column;gap:14px}
 .hero .label{font:600 11px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
 .big{font:700 clamp(44px,6vw,64px)/1 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.04em}
@@ -68,7 +68,7 @@ button:disabled{opacity:.5;cursor:wait}
 .ch:last-child{border-right:0}
 .ch h4{margin:0 0 10px;font:700 12px/1 var(--mono);letter-spacing:.2em;display:flex;align-items:center;gap:8px}
 .ch h4::before{content:"";width:14px;height:4px;background:currentColor}
-.ch.A h4{color:var(--a)}.ch.B h4{color:var(--b)}
+.ch.A h4{color:var(--a)}.ch.B h4{color:var(--b)}.ch.S h4{color:var(--signal-ink)}
 .row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--rule);font-size:13px}
 .row:last-child{border-bottom:0}
 .row span:first-child{color:var(--muted)}
@@ -141,6 +141,10 @@ dialog form{padding:4px 20px 20px}
         <button type="button" id="restart">Reiniciar</button>
         <button type="button" class="danger" id="reset">Apagar configurações</button>
       </div>
+      <div class="actions" style="margin-top:18px">
+        <label>Firmware (.bin)<input type="file" id="fwFile" accept=".bin"></label>
+        <button type="button" id="fwSend">Atualizar firmware</button>
+      </div>
     </form>
   </details>
 </main>
@@ -197,10 +201,12 @@ function chips(d){
     `<span class="chip">up ${up(d.uptimeSec)} · ${Math.round(d.freeHeap/1024)}KB · v${esc(d.fw)}</span>`;
 }
 
+const GROUP_TITLES={A:'CANAL A',B:'CANAL B',S:'ESTADO'};
+function shown(ent,v){return ent.component==='binary_sensor'?(v?'ON':'OFF'):v}
 function fmt(ent,state){
   const v=state?.[ent.code];
   if(v==null)return'<span class="v">—</span>';
-  return`<span class="v">${esc(v)}${ent.unit?`<u>${esc(ent.unit)}</u>`:''}</span>`;
+  return`<span class="v">${esc(shown(ent,v))}${ent.unit?`<u>${esc(ent.unit)}</u>`:''}</span>`;
 }
 
 function meterCard(dev,prof){
@@ -210,6 +216,7 @@ function meterCard(dev,prof){
   const online=st.online,never=st.lastOkAgoSec==null;
   const statusTxt=!dev.enabled?'desativado':online?'online':never?'aguardando':'offline';
   const rows=list=>list.map(e=>`<div class="row"><span>${esc(e.name.replace(/ [AB]$/,''))}</span>${fmt(e,s)}</div>`).join('');
+  const cols=[...new Set(ents.map(e=>e.group))].filter(k=>k!=='T');
   return`<article class="meter">
     <div class="meter-head">
       <div><h3>${esc(dev.name)}</h3><div class="meta">${esc(dev.id)} · ${esc(dev.ip)} · v${esc(dev.protocol)} · ${esc(prof?.label||dev.profile)}</div></div>
@@ -219,14 +226,13 @@ function meterCard(dev,prof){
         <button class="ghost" data-del="${esc(dev.id)}">Remover</button>
       </div>
     </div>
-    <div class="meter-body">
+    <div class="meter-body" style="--cols:${cols.length}">
       <div class="hero">
         <div><div class="label">${esc(heroMain?.name||'')}</div>
           <div class="big">${esc(s[heroMain?.code]??'—')}<small>${esc(heroMain?.unit||'')}</small></div></div>
         <div class="mini">${hero.slice(1).map(e=>`<div><div class="label">${esc(e.name)}</div>${fmt(e,s)}</div>`).join('')}</div>
       </div>
-      <div class="ch A"><h4>CANAL A</h4>${rows(g('A'))}</div>
-      <div class="ch B"><h4>CANAL B</h4>${rows(g('B'))}</div>
+      ${cols.map(k=>`<div class="ch ${esc(k)}"><h4>${esc(GROUP_TITLES[k]||k)}</h4>${rows(g(k))}</div>`).join('')}
     </div>
     ${st.lastError&&!online?`<p class="err">${esc(st.lastError)}${st.failures?' · '+st.failures+' falha(s) seguida(s)':''}</p>`:''}
   </article>`;
@@ -284,7 +290,7 @@ $('#test').onclick=async()=>{
   busy(b,false,'Testar conexão');
   if(!r.ok){p.className='probe fail';p.textContent='✗ '+(r.error||'falhou');return}
   const prof=last.profiles.find(x=>x.id===form.profile.value);
-  const rows=(prof?.entities||[]).map(e=>`<tr><td>${esc(e.name)}</td><td>dp ${e.dp}</td><td>${esc(r.state?.[e.code]??'—')} ${esc(e.unit||'')}</td></tr>`).join('');
+  const rows=(prof?.entities||[]).map(e=>`<tr><td>${esc(e.name)}</td><td>dp ${e.dp}</td><td>${esc(r.state?.[e.code]==null?'—':shown(e,r.state[e.code]))} ${esc(e.unit||'')}</td></tr>`).join('');
   p.className='probe ok';
   p.innerHTML=`✓ respondeu em ${r.durationMs}ms · ${Object.keys(r.dps||{}).length} DPs<table>${rows}</table>`;
 };
@@ -312,6 +318,17 @@ sf.onsubmit=async e=>{
   f.mqttPort=+f.mqttPort;f.pollSeconds=+f.pollSeconds;f.adminPassClear=sf.adminPassClear.checked;
   const r=await api('/api/settings',{method:'POST',body:JSON.stringify(f)});
   toast(r.ok?'Salvo. Reiniciando — se mudou a rede, procure o novo IP.':r.error);
+};
+$('#fwSend').onclick=async()=>{
+  const f=$('#fwFile').files[0],b=$('#fwSend');
+  if(!f){toast('Escolha o firmware.bin (em .pio/build/esp32dev/)');return}
+  if(!confirm(`Gravar ${f.name} (${Math.round(f.size/1024)} KB) e reiniciar?`))return;
+  const fd=new FormData();fd.append('firmware',f,f.name);
+  busy(b,true,'Enviando…');
+  const r=await fetch('/api/firmware',{method:'POST',headers:{'X-Requested-With':'1'},body:fd})
+    .then(x=>x.json()).catch(()=>({ok:false,error:'falha no envio'}));
+  busy(b,false,'Atualizar firmware');
+  toast(r.ok?'Firmware gravado. Reiniciando…':r.error);
 };
 $('#restart').onclick=async()=>{await api('/api/restart',{method:'POST'});toast('Reiniciando…')};
 $('#reset').onclick=async()=>{

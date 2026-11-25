@@ -1,5 +1,6 @@
 #include "web_api.h"
 
+#include <Update.h>
 #include <WebServer.h>
 
 #include "device_profiles.h"
@@ -88,6 +89,7 @@ void profilesToJson(JsonArray out) {
       eo["dp"] = e.dp;
       if (e.unit) eo["unit"] = e.unit;
       eo["group"] = String(e.group);
+      eo["component"] = entityComponent(e);
     }
   }
 }
@@ -254,6 +256,52 @@ void handleFactoryReset() {
   scheduleRestart();
 }
 
+/* ---------------- firmware (upload do .bin) ---------------- */
+
+// O corpo chega em pedacos antes do handler final: autorizacao e CSRF sao
+// checados ja no primeiro pedaco, e nada e gravado sem eles.
+bool uploadAllowed = false;
+String uploadError;
+
+void handleFirmwareChunk() {
+  HTTPUpload &up = server.upload();
+  switch (up.status) {
+    case UPLOAD_FILE_START:
+      uploadError = "";
+      uploadAllowed = server.header(kCsrfHeader) == "1" &&
+                      (settings.adminPass.isEmpty() ||
+                       server.authenticate("admin", settings.adminPass.c_str()));
+      if (!uploadAllowed) return;
+      Serial.printf("[web] firmware: recebendo %s\n", up.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) uploadError = Update.errorString();
+      break;
+    case UPLOAD_FILE_WRITE:
+      if (uploadAllowed && uploadError.isEmpty() &&
+          Update.write(up.buf, up.currentSize) != up.currentSize)
+        uploadError = Update.errorString();   // inclui .bin sem o magic do ESP32
+      break;
+    case UPLOAD_FILE_END:
+      if (uploadAllowed && uploadError.isEmpty() && !Update.end(true))
+        uploadError = Update.errorString();
+      break;
+    default:   // UPLOAD_FILE_ABORTED
+      uploadError = "upload interrompido";
+      break;
+  }
+}
+
+void handleFirmwareDone() {
+  if (!authorizedWrite()) return;
+  if (!uploadError.isEmpty() || !Update.isFinished()) {
+    if (Update.isRunning()) Update.abort();
+    sendError(400, "firmware recusado: " + (uploadError.isEmpty() ? String("incompleto") : uploadError));
+    return;
+  }
+  Serial.println("[web] firmware gravado; reiniciando");
+  sendOk();
+  scheduleRestart();
+}
+
 void handleRoot() {
   if (!authorized()) return;
   server.send_P(200, "text/html; charset=utf-8", kWebPage);
@@ -278,6 +326,7 @@ void begin(const Settings &s, DeviceStore &st, DevicePoller &p, MqttPublisher &m
   server.on("/api/settings", HTTP_POST, handleSaveSettings);
   server.on("/api/restart", HTTP_POST, handleRestart);
   server.on("/api/factory-reset", HTTP_POST, handleFactoryReset);
+  server.on("/api/firmware", HTTP_POST, handleFirmwareDone, handleFirmwareChunk);
   server.onNotFound([] { server.send(404, "text/plain", "nao encontrado"); });
   server.begin();
 }

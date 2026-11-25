@@ -45,8 +45,16 @@ void MqttPublisher::begin(const Settings &s) {
 
 String MqttPublisher::haId(const String &id) const { return String(kHaIdPrefix) + id; }
 
-String MqttPublisher::discoveryTopic(const String &id, const char *code) const {
-  return settings_.discoveryPrefix + "/sensor/" + id + "/" + code + "/config";
+String MqttPublisher::discoveryTopic(const String &id, const DpEntity &e) const {
+  return settings_.discoveryPrefix + "/" + entityComponent(e) + "/" + id + "/" + e.code + "/config";
+}
+
+// Mesmos templates do worker: ausente vira None (unknown); no binario,
+// qualquer valor verdadeiro (inclusive bitmap de falha != 0) vira ON.
+static String valueTemplate(const DpEntity &e) {
+  const String v = String("value_json.get('") + e.code + "')";
+  if (strcmp(entityComponent(e), "binary_sensor") != 0) return "{{ " + v + " }}";
+  return "{{ 'None' if " + v + " is none else ('ON' if " + v + " else 'OFF') }}";
 }
 
 String MqttPublisher::deviceTopic(const String &id, const char *leaf) const {
@@ -166,9 +174,9 @@ bool MqttPublisher::publishDiscovery(const DeviceConfig &cfg, const DeviceProfil
     // Nome da entidade relativo ao device: "WIFI dual meter Total Power".
     doc["has_entity_name"] = true;
     doc["state_topic"] = stateTopic;
-    // .get(): DP ausente vira None (unknown) em vez de erro de template.
-    doc["value_template"] = String("{{ value_json.get('") + e.code + "') }}";
+    doc["value_template"] = valueTemplate(e);
     doc["expire_after"] = expireAfter;
+    if (e.entityCategory) doc["entity_category"] = e.entityCategory;
     if (e.deviceClass) doc["device_class"] = e.deviceClass;
     if (e.unit) doc["unit_of_measurement"] = e.unit;
     if (e.stateClass) doc["state_class"] = e.stateClass;
@@ -191,7 +199,7 @@ bool MqttPublisher::publishDiscovery(const DeviceConfig &cfg, const DeviceProfil
 
     String payload;
     serializeJson(doc, payload);
-    allOk &= pub(discoveryTopic(cfg.id, e.code), payload);
+    allOk &= pub(discoveryTopic(cfg.id, e), payload);
   }
   Serial.printf("[mqtt] discovery %s: %s (%u entidades)\n", allOk ? "publicado" : "FALHOU",
                 cfg.id.c_str(), (unsigned)profile.entityCount);
@@ -203,7 +211,7 @@ bool MqttPublisher::removeDiscovery(const String &id, const String &profileId) {
   if (!profile) return true;   // nada conhecido para apagar
   bool allOk = true;
   for (size_t i = 0; i < profile->entityCount; i++)
-    allOk &= pub(discoveryTopic(id, profile->entities[i].code), "");
+    allOk &= pub(discoveryTopic(id, profile->entities[i]), "");
   allOk &= pub(deviceTopic(id, "state"), "");
   allOk &= pub(deviceTopic(id, "availability"), "");
   Serial.printf("[mqtt] discovery %s: %s\n", allOk ? "removido" : "remocao FALHOU", id.c_str());

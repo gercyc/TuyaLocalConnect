@@ -32,6 +32,7 @@
 #include "settings_store.h"
 
 struct DeviceProfile;
+struct DpEntity;
 
 class MqttPublisher {
  public:
@@ -60,7 +61,7 @@ class MqttPublisher {
 
   String deviceTopic(const String &id, const char *leaf) const;
   String haId(const String &id) const;   // "tuya_<devId>", como o worker
-  String discoveryTopic(const String &id, const char *code) const;
+  String discoveryTopic(const String &id, const DpEntity &e) const;
 
   DeviceStore &store_;
   DevicePoller &poller_;

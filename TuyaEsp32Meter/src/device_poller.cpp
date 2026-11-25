@@ -21,6 +21,8 @@ tuya::Endpoint toEndpoint(const DeviceConfig &cfg) {
   ep.id = cfg.id;
   ep.proto = cfg.proto;
   memcpy(ep.localKey, cfg.localKey.c_str(), tuya::kKeyLen);
+  if (const DeviceProfile *p = findProfile(cfg.profile))
+    ep.refreshDps.assign(p->refreshDps, p->refreshDps + p->refreshCount);
   return ep;
 }
 

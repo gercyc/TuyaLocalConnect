@@ -34,6 +34,7 @@ enum Cmd : uint32_t {
   kCmdStatus     = 0x08,
   kCmdDpQuery    = 0x0A,
   kCmdDpQueryNew = 0x10,
+  kCmdUpdateDps  = 0x12,   // pede recalculo de DPs; resposta vem em STATUS
 };
 
 // Versao do protocolo em decimos: 33, 34 ou 35.

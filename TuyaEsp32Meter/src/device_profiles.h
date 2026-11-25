@@ -22,8 +22,15 @@ struct DpEntity {
   float       scale;         // valor publicado = bruto * scale; 0 = texto
   uint8_t     decimals;
   const char *icon;
-  char        group;         // 'A', 'B' ou 'T' (total) — agrupa na pagina
+  char        group;         // 'T' = destaque; demais = colunas na pagina
+  // Campos opcionais: omitidos no inicializador ficam nullptr.
+  const char *component;      // nullptr = "sensor"; ou "binary_sensor"
+  const char *entityCategory; // nullptr ou "diagnostic"
 };
+
+inline const char *entityComponent(const DpEntity &e) {
+  return e.component ? e.component : "sensor";
+}
 
 struct DeviceProfile {
   const char     *id;
@@ -33,6 +40,10 @@ struct DeviceProfile {
   const DpEntity *entities;
   size_t          entityCount;
   uint8_t         defaultProto;
+  // DPs que o device so atualiza em degraus no DP_QUERY: pedidos via
+  // UPDATEDPS antes de cada leitura. nullptr/0 = sem refresh.
+  const uint8_t  *refreshDps;
+  size_t          refreshCount;
 };
 
 // nullptr se o id nao existir.

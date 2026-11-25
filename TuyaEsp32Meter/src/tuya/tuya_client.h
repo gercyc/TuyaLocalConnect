@@ -14,6 +14,7 @@
 #include <WiFiClient.h>
 
 #include <memory>
+#include <vector>
 
 #include "tuya_frame.h"
 
@@ -24,6 +25,9 @@ struct Endpoint {
   String  id;                   // devId / gwId
   uint8_t localKey[kKeyLen];
   Proto   proto = 35;           // 33, 34 ou 35
+  // DPs a recalcular via UPDATEDPS antes da leitura (medicao que o device
+  // so atualiza em degraus). Vazio = so DP_QUERY.
+  std::vector<uint8_t> refreshDps;
 };
 
 class Client {
@@ -39,7 +43,10 @@ class Client {
   bool send(WiFiClient &cli, uint32_t cmd, const uint8_t *payload, size_t len,
             const uint8_t *key, Proto proto, String &err);
   bool receive(WiFiClient &cli, const uint8_t *key, Proto proto,
-               ParsedFrame &frame, String &err);
+               ParsedFrame &frame, String &err, uint32_t timeoutMs = 5000);
+  bool mergeDps(size_t len, JsonDocument &into, String &err);
+  void requestRefresh(WiFiClient &cli, const Endpoint &ep, const uint8_t *key,
+                      JsonDocument &fresh);
 
   std::unique_ptr<uint8_t[]> tx_;
   std::unique_ptr<uint8_t[]> rx_;

@@ -31,10 +31,43 @@ const DpEntity kDualMeter[] = {
 
 const DeviceProfile kDualMeterProfile = {
   "pj1103c", "Medidor dual Wi-Fi (PJ1103C)", "Tuya", "PJ1103C",
-  kDualMeter, sizeof(kDualMeter) / sizeof(kDualMeter[0]), 35,
+  kDualMeter, sizeof(kDualMeter) / sizeof(kDualMeter[0]), 35, nullptr, 0,
 };
 
-const DeviceProfile *const kProfiles[] = {&kDualMeterProfile};
+// TMPH — "63A Smart Circuit Breaker" (categoria znjdq), disjuntor com
+// medicao. Mesmos DPs 17..20 das tomadas medidoras. Leitura apenas: o
+// estado do rele vira binary_sensor, sem comando. Nomes das entidades
+// iguais aos do localtuya (HaEntityCatalog do worker).
+constexpr const char *kBinary     = "binary_sensor";
+constexpr const char *kDiagnostic = "diagnostic";
+
+const DpEntity kBreaker[] = {
+  {19, "cur_power",    "Power",             "power",   "W",   kMeasurement, 0.1f,   1, nullptr,              'T'},
+  {20, "cur_voltage",  "Voltage",           "voltage", "V",   kMeasurement, 0.1f,   1, nullptr,              'T'},
+  {18, "cur_current",  "Current",           "current", "A",   kMeasurement, 0.001f, 3, nullptr,              'T'},
+
+  { 1, "switch_1",     "Switch 1",          "power",   nullptr, nullptr,    0.0f,   0, nullptr,              'S', kBinary},
+  {26, "fault",        "Fault",             "problem", nullptr, nullptr,    0.0f,   0, nullptr,              'S', kBinary, kDiagnostic},
+  {38, "relay_status", "Power-on behavior", nullptr,   nullptr, nullptr,    0.0f,   0, "mdi:circle-double",  'S', nullptr, kDiagnostic},
+  // add_ele NAO e energia acumulada neste device: e um contador de Wh desde
+  // o ultimo envio a nuvem, que satura em 100 (medido em 2026-11-25: ficou
+  // em 100 por 40 min a ~500 W). Como total_increasing perderia consumo no
+  // painel de Energia; vai cru, como diagnostico. Para kWh, use no HA o
+  // helper "Integral" (Riemann) sobre o Power.
+  {17, "add_ele",      "Electricity",       nullptr,   nullptr, nullptr,    0.0f,   0, "mdi:counter",        'S', nullptr, kDiagnostic},
+};
+
+// O DP_QUERY deste disjuntor devolve medicao de ate ~5 min atras. O add_ele
+// fica de fora: o UPDATEDPS nao muda o valor dele.
+const uint8_t kBreakerRefresh[] = {18, 19, 20};
+
+const DeviceProfile kBreakerProfile = {
+  "tmph", "Disjuntor Wi-Fi 63A com medidor (TMPH)", "Tuya", "TMPH",
+  kBreaker, sizeof(kBreaker) / sizeof(kBreaker[0]), 35,
+  kBreakerRefresh, sizeof(kBreakerRefresh),
+};
+
+const DeviceProfile *const kProfiles[] = {&kDualMeterProfile, &kBreakerProfile};
 
 }  // namespace
 

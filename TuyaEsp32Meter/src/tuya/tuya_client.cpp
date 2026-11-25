@@ -9,6 +9,7 @@ namespace {
 constexpr uint32_t kConnectTimeoutMs = 5000;
 constexpr uint32_t kIoTimeoutMs      = 5000;
 constexpr uint32_t kQueryDeadlineMs  = 10000;  // handshake + resposta, apos o connect
+constexpr uint32_t kRefreshWaitMs    = 2000;   // espera pelos STATUS do UPDATEDPS
 constexpr uint16_t kTcpPort          = 6668;
 constexpr size_t   kNonceLen         = 16;
 constexpr uint8_t  kMaxFramesPerQuery = 4;   // pula STATUS que chegue antes
@@ -49,15 +50,15 @@ bool Client::send(WiFiClient &cli, uint32_t cmd, const uint8_t *payload,
 }
 
 bool Client::receive(WiFiClient &cli, const uint8_t *key, Proto proto,
-                     ParsedFrame &frame, String &err) {
+                     ParsedFrame &frame, String &err, uint32_t timeoutMs) {
   uint8_t *buf = rx_.get();
   size_t got = 0;
   long total = 0;
   const uint32_t start = millis();
 
-  // Cada leitura tem kIoTimeoutMs, mas nunca passa do prazo da consulta
+  // Cada leitura tem seu timeout, mas nunca passa do prazo da consulta
   // inteira: varios frames lentos somados nao seguram quem chamou.
-  while (millis() - start < kIoTimeoutMs && int32_t(deadline_ - millis()) > 0) {
+  while (millis() - start < timeoutMs && int32_t(deadline_ - millis()) > 0) {
     const int avail = cli.available();
     if (avail > 0) {
       // Sem o tamanho ainda, le so o header: assim nunca consome bytes
@@ -137,6 +138,49 @@ bool Client::negotiate(WiFiClient &cli, const Endpoint &ep, String &err) {
   return true;
 }
 
+// Junta em `into` os dps do payload decifrado em plain_. Aceita os dois
+// formatos: {"dps":{..}} (respostas) e {"data":{"dps":{..}}} (STATUS 3.4+).
+bool Client::mergeDps(size_t len, JsonDocument &into, String &err) {
+  JsonDocument doc;
+  if (deserializeJson(doc, plain_.get(), len)) {
+    err = "JSON invalido na resposta";
+    return false;
+  }
+  JsonObjectConst found = doc["dps"];
+  if (found.isNull()) found = doc["data"]["dps"];
+  if (found.isNull()) {
+    err = "resposta sem dps";
+    return false;
+  }
+  for (JsonPairConst kv : found) into[kv.key()] = kv.value();
+  return true;
+}
+
+// UPDATEDPS (0x12) e espera os STATUS com os valores recalculados. Falha
+// aqui nao e fatal: sem refresh, o DP_QUERY ainda traz a ultima foto.
+void Client::requestRefresh(WiFiClient &cli, const Endpoint &ep,
+                            const uint8_t *key, JsonDocument &fresh) {
+  JsonDocument req;
+  JsonArray ids = req["dpId"].to<JsonArray>();
+  for (uint8_t dp : ep.refreshDps) ids.add(dp);
+  String payload;
+  serializeJson(req, payload);
+
+  String err;
+  if (!send(cli, kCmdUpdateDps, reinterpret_cast<const uint8_t *>(payload.c_str()),
+            payload.length(), key, ep.proto, err))
+    return;
+
+  const uint32_t until = millis() + kRefreshWaitMs;
+  while (int32_t(until - millis()) > 0) {
+    ParsedFrame frame;
+    if (!receive(cli, key, ep.proto, frame, err, until - millis())) return;
+    if (frame.payloadLen == 0) continue;   // ACK do UPDATEDPS
+    if (mergeDps(frame.payloadLen, fresh, err) && fresh.size() >= ep.refreshDps.size())
+      return;   // ja chegou tudo que foi pedido
+  }
+}
+
 bool Client::queryDps(const Endpoint &ep, JsonDocument &dps, String &err) {
   deadline_ = millis() + kQueryDeadlineMs;
   WiFiClient cli;
@@ -154,6 +198,13 @@ bool Client::queryDps(const Endpoint &ep, JsonDocument &dps, String &err) {
       key = sessionKey_;
     }
 
+    // Medidores devolvem no DP_QUERY uma foto que so atualizam a cada
+    // poucos minutos. O UPDATEDPS pede o recalculo; os valores novos chegam
+    // em frames STATUS e valem mais que os do DP_QUERY.
+    JsonDocument fresh;
+    fresh.to<JsonObject>();
+    if (!ep.refreshDps.empty()) requestRefresh(cli, ep, key, fresh);
+
     // 3.4/3.5 usam DP_QUERY_NEW com "{}"; o 3.3 manda os ids no corpo.
     const bool isNew = ep.proto >= 34;
     const String payload = isNew ? String("{}") : legacyQueryPayload(ep.id);
@@ -162,27 +213,27 @@ bool Client::queryDps(const Endpoint &ep, JsonDocument &dps, String &err) {
               payload.length(), key, ep.proto, err))
       break;
 
-    // O device pode empurrar um STATUS antes da resposta: aceita o
-    // primeiro frame que trouxer "dps".
+    // O device pode empurrar STATUS antes da resposta. Sem refresh, o
+    // primeiro frame com "dps" serve. Com refresh, STATUS atrasados do
+    // UPDATEDPS trazem so os DPs de medicao: entram em `fresh`, e so a
+    // resposta do proprio DP_QUERY fecha a leitura.
+    const bool waitQueryReply = !ep.refreshDps.empty();
     err = "device respondeu sem dps";   // sobrescrito por erro mais especifico
     for (uint8_t i = 0; i < kMaxFramesPerQuery && !ok; i++) {
       ParsedFrame frame;
       if (!receive(cli, key, ep.proto, frame, err)) break;
       if (frame.payloadLen == 0) continue;
 
-      JsonDocument doc;
-      if (deserializeJson(doc, plain_.get(), frame.payloadLen)) {
-        err = "JSON invalido na resposta";
+      if (waitQueryReply && frame.cmd == kCmdStatus) {
+        mergeDps(frame.payloadLen, fresh, err);
         continue;
       }
-      JsonVariant found = doc["dps"];
-      if (found.isNull()) found = doc["data"]["dps"];
-      if (found.isNull()) { err = "resposta sem dps"; continue; }
-
       dps.clear();
-      dps.set(found);
-      ok = true;
+      dps.to<JsonObject>();
+      ok = mergeDps(frame.payloadLen, dps, err);
     }
+    if (ok)
+      for (JsonPairConst kv : fresh.as<JsonObjectConst>()) dps[kv.key()] = kv.value();
   } while (false);
 
   cli.stop();
