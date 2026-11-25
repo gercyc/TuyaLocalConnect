@@ -31,6 +31,7 @@ Não há projetos de teste neste repositório.
 
 - **`CamposDev.Tuya/`** — Biblioteca reutilizável com todos os serviços Tuya LAN. Pode ser empacotada como NuGet.
 - **`MqttThSensorWorker/`** — Worker Service .NET 9 que consome a biblioteca. Configura DI, Serilog e MQTT.
+- **`TuyaEsp32Meter/`** — Firmware ESP32 (PlatformIO, `pio run -t upload`) com o mesmo protocolo, só leitura, focado no medidor PJ1103C. Devices são cadastrados pela página web e ficam na NVS (sem recompilar). Publica em `tuya32/...` no mosquitto do diamond (`192.168.18.137`), que faz bridge para o `192.168.101.3`. Ver `TuyaEsp32Meter/README.md`. Wi-Fi/MQTT de primeiro boot em `include/secrets.h` (gitignored).
 
 ### Fluxo de dados
 
@@ -86,7 +87,7 @@ Frames cujo campo de tamanho excede `MaxFrameSize` (8 KB) são rejeitados antes 
 ### Comportamentos importantes
 
 - **Throttle**: mínimo 30s entre consultas por dispositivo (evita flood no sensor)
-- **Polling sem broadcast**: devices com `Dps` e `DeviceIp` que não anunciaram via UDP no último minuto são consultados a cada 30s pelo IP configurado (ex.: medidor PJ1103C, que aceita TCP mas nunca anuncia). Sensores sem `Dps` (a bateria) ficam de fora, porque dormem
+- **Polling sem broadcast**: devices com `Dps` e `DeviceIp` que não anunciaram via UDP no último minuto são consultados a cada 30s pelo IP configurado (ex.: o medidor PJ1103C, que aceita TCP mas nunca anuncia — hoje lido pelo `TuyaEsp32Meter`, não mais pelo worker). Sensores sem `Dps` (a bateria) ficam de fora, porque dormem
 - **Um cliente TCP por device**: rodar o worker local junto com o container de produção faz os dois disputarem a porta 6668, e aparecem timeouts e `connection reset` que não existem com uma instância só
 - **Retry**: protocolo 3.3 tenta até 3 vezes com 400ms de intervalo em erros "json obj data unvali"
 - **Timeout TCP**: 15s total, 5s por operação de I/O
