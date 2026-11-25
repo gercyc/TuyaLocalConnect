@@ -238,7 +238,12 @@ function meterCard(dev,prof){
   </article>`;
 }
 
+let loadedFw=null;
 function render(d){
+  // Firmware novo traz pagina nova: uma aba aberta antes da atualizacao
+  // seguiria com o JS antigo, ja que o refresh so busca dados.
+  if(loadedFw&&d.fw!==loadedFw&&!$('#dlg').open){location.reload();return}
+  loadedFw=d.fw;
   last=d;chips(d);
   const box=$('#devices');
   if(!d.devices.length){
