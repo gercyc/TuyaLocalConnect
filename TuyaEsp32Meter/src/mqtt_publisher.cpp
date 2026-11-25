@@ -13,7 +13,15 @@ constexpr uint16_t kBufferSize   = 1024;   // discovery com bloco device passa d
 constexpr uint16_t kKeepAliveSec = 30;     // folga para o "Testar" da pagina, que bloqueia
 constexpr const char *kOnline    = "online";
 constexpr const char *kOffline   = "offline";
-constexpr const char *kNodePrefix = "tuya32_";
+// Mesma identidade do HaDiscoveryPublisher do worker .NET (unique_id
+// tuya_<devId>_<code>, device tuya_<devId>): o device que migra do worker
+// para o ESP32 continua sendo o mesmo para o HA. O outro lado disso e que
+// worker e ESP32 nao podem publicar o mesmo device ao mesmo tempo.
+constexpr const char *kHaIdPrefix = "tuya_";
+// expire_after do worker (ExpireAfterSeconds). Nunca abaixo de 3 leituras,
+// senao um intervalo de polling longo marcaria o sensor como indisponivel.
+constexpr uint32_t kExpireAfterSec = 300;
+constexpr uint32_t kExpireMinPolls = 3;
 
 }  // namespace
 
@@ -35,7 +43,11 @@ void MqttPublisher::begin(const Settings &s) {
   mqtt_.setCallback([this](char *t, uint8_t *p, unsigned int l) { onMessage(t, p, l); });
 }
 
-String MqttPublisher::nodeId(const String &id) const { return String(kNodePrefix) + id; }
+String MqttPublisher::haId(const String &id) const { return String(kHaIdPrefix) + id; }
+
+String MqttPublisher::discoveryTopic(const String &id, const char *code) const {
+  return settings_.discoveryPrefix + "/sensor/" + id + "/" + code + "/config";
+}
 
 String MqttPublisher::deviceTopic(const String &id, const char *leaf) const {
   return settings_.baseTopic + "/" + id + "/" + leaf;
@@ -140,17 +152,23 @@ void MqttPublisher::syncDiscovery(const std::vector<DeviceConfig> &devices) {
 
 bool MqttPublisher::publishDiscovery(const DeviceConfig &cfg, const DeviceProfile &profile) {
   bool allOk = true;
-  const String node = nodeId(cfg.id);
+  const String ha = haId(cfg.id);
   const String stateTopic = deviceTopic(cfg.id, "state");
   const String availTopic = deviceTopic(cfg.id, "availability");
+  const uint32_t expireAfter =
+      std::max(kExpireAfterSec, uint32_t(settings_.pollSeconds) * kExpireMinPolls);
 
   for (size_t i = 0; i < profile.entityCount; i++) {
     const DpEntity &e = profile.entities[i];
     JsonDocument doc;
     doc["name"] = e.name;
-    doc["unique_id"] = node + "_" + e.code;
+    doc["unique_id"] = ha + "_" + e.code;
+    // Nome da entidade relativo ao device: "WIFI dual meter Total Power".
+    doc["has_entity_name"] = true;
     doc["state_topic"] = stateTopic;
-    doc["value_template"] = String("{{ value_json.") + e.code + " }}";
+    // .get(): DP ausente vira None (unknown) em vez de erro de template.
+    doc["value_template"] = String("{{ value_json.get('") + e.code + "') }}";
+    doc["expire_after"] = expireAfter;
     if (e.deviceClass) doc["device_class"] = e.deviceClass;
     if (e.unit) doc["unit_of_measurement"] = e.unit;
     if (e.stateClass) doc["state_class"] = e.stateClass;
@@ -162,15 +180,18 @@ bool MqttPublisher::publishDiscovery(const DeviceConfig &cfg, const DeviceProfil
     doc["availability_mode"] = "all";
 
     JsonObject dev = doc["device"].to<JsonObject>();
-    dev["identifiers"].to<JsonArray>().add(node);
+    dev["identifiers"].to<JsonArray>().add(ha);
     dev["name"] = cfg.name;
-    dev["manufacturer"] = profile.manufacturer;
     dev["model"] = profile.model;
-    dev["sw_version"] = "tuya32 " FW_VERSION;
+    dev["manufacturer"] = profile.manufacturer;
+
+    JsonObject origin = doc["origin"].to<JsonObject>();
+    origin["name"] = "TuyaEsp32Meter";
+    origin["sw_version"] = FW_VERSION;
 
     String payload;
     serializeJson(doc, payload);
-    allOk &= pub(settings_.discoveryPrefix + "/sensor/" + node + "/" + e.code + "/config", payload);
+    allOk &= pub(discoveryTopic(cfg.id, e.code), payload);
   }
   Serial.printf("[mqtt] discovery %s: %s (%u entidades)\n", allOk ? "publicado" : "FALHOU",
                 cfg.id.c_str(), (unsigned)profile.entityCount);
@@ -181,10 +202,8 @@ bool MqttPublisher::removeDiscovery(const String &id, const String &profileId) {
   const DeviceProfile *profile = findProfile(profileId);
   if (!profile) return true;   // nada conhecido para apagar
   bool allOk = true;
-  const String node = nodeId(id);
   for (size_t i = 0; i < profile->entityCount; i++)
-    allOk &= pub(settings_.discoveryPrefix + "/sensor/" + node + "/" +
-                 profile->entities[i].code + "/config", "");
+    allOk &= pub(discoveryTopic(id, profile->entities[i].code), "");
   allOk &= pub(deviceTopic(id, "state"), "");
   allOk &= pub(deviceTopic(id, "availability"), "");
   Serial.printf("[mqtt] discovery %s: %s\n", allOk ? "removido" : "remocao FALHOU", id.c_str());

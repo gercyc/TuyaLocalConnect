@@ -5,7 +5,11 @@
  *    <base>/bridge/availability          online/offline (LWT do ESP32)
  *    <base>/<devId>/availability         online/offline do device Tuya
  *    <base>/<devId>/state                JSON {"<code>": valor}, retain
- *    <disc>/sensor/tuya32_<devId>/<code>/config   discovery, retain
+ *    <disc>/sensor/<devId>/<code>/config  discovery, retain
+ *
+ *  Topico de discovery, unique_id (tuya_<devId>_<code>) e identificador do
+ *  device (tuya_<devId>) sao os mesmos do worker .NET: um device migrado de
+ *  la continua sendo o mesmo para o HA.
  *
  *  O discovery acompanha a lista de devices sozinho: device novo ganha
  *  entidades, device removido tem as configs apagadas (payload vazio),
@@ -55,7 +59,8 @@ class MqttPublisher {
   bool pub(const String &topic, const String &payload, bool retain = true);
 
   String deviceTopic(const String &id, const char *leaf) const;
-  String nodeId(const String &id) const;
+  String haId(const String &id) const;   // "tuya_<devId>", como o worker
+  String discoveryTopic(const String &id, const char *code) const;
 
   DeviceStore &store_;
   DevicePoller &poller_;

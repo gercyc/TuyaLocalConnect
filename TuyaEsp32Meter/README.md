@@ -51,11 +51,25 @@ broadcast UDP, então não há como redescobrir o endereço.
 | `tuya32/bridge/availability` | `online`/`offline` do ESP32 (Last Will) |
 | `tuya32/<devId>/availability` | `offline` após 3 falhas seguidas de leitura |
 | `tuya32/<devId>/state` | JSON por código de DP, valores escalados, retain |
-| `homeassistant/sensor/tuya32_<devId>/<code>/config` | discovery, retain |
+| `homeassistant/sensor/<devId>/<code>/config` | discovery, retain |
 
 O ESP32 assina `homeassistant/status` e republica o discovery quando o HA
-reinicia. O prefixo `tuya32` e o `unique_id` `tuya32_*` não colidem com as
-entidades do worker .NET.
+reinicia.
+
+O discovery tem a **mesma identidade do worker .NET**:
+- tópico de discovery, `unique_id` `tuya_<devId>_<code>` e device
+  `tuya_<devId>`;
+- `has_entity_name`, `value_template` com `.get()` e `expire_after` 300 s (no
+  mínimo 3 leituras).
+
+Assim, um device que migra do worker para o ESP32 continua sendo o mesmo
+para o HA. Por isso **o mesmo device não pode estar nos dois ao mesmo
+tempo**: tire-o do `appsettings.json` do worker antes de cadastrá-lo aqui.
+
+Diferenças em relação ao worker, que não afetam a identidade:
+- o estado vai em `tuya32/<devId>/state`;
+- há availability por device;
+- o `origin` é `TuyaEsp32Meter`.
 
 **Broker:** o ESP32 publica no mosquitto do diamond (`192.168.18.137`), que
 tem uma bridge para o broker do homeserver (`192.168.101.3`), só alcançável
