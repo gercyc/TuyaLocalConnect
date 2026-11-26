@@ -264,13 +264,17 @@ function formData(){
   f.enabled=form.enabled.checked;
   return f;
 }
+function applyProfileProto(){
+  const p=last.profiles.find(x=>x.id===form.profile.value);
+  if(p)form.protocol.value=p.defaultProtocol;
+}
 function openDialog(dev){
   form.reset();$('#probe').hidden=true;
   $('#profileSel').innerHTML=last.profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('');
   $('#dlgTitle').textContent=dev?'Editar device':'Novo device';
   form.originalId.value=dev?.id||'';
   if(dev){for(const k of['name','id','ip','profile','protocol'])form[k].value=dev[k];form.enabled.checked=dev.enabled}
-  else form.protocol.value=last.profiles[0]?.defaultProtocol||'3.5';
+  else applyProfileProto();
   form.localKey.required=!dev;
   form.localKey.placeholder=dev?.hasKey?'(mantém a atual)':'';
   $('#dlg').showModal();
@@ -278,6 +282,7 @@ function openDialog(dev){
 function busy(btn,on,txt){btn.disabled=on;if(txt)btn.textContent=txt}
 
 $('#add').onclick=()=>openDialog(null);
+$('#profileSel').onchange=applyProfileProto;
 $('#cancel').onclick=()=>$('#dlg').close();
 $('#devices').onclick=async e=>{
   const ed=e.target.dataset.edit,del=e.target.dataset.del;

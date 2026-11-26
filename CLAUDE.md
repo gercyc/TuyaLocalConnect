@@ -31,7 +31,7 @@ Não há projetos de teste neste repositório.
 
 - **`CamposDev.Tuya/`** — Biblioteca reutilizável com todos os serviços Tuya LAN. Pode ser empacotada como NuGet.
 - **`MqttThSensorWorker/`** — Worker Service .NET 9 que consome a biblioteca. Configura DI, Serilog e MQTT.
-- **`TuyaEsp32Meter/`** — Firmware ESP32 (PlatformIO, `pio run -t upload`) com o mesmo protocolo, só leitura, focado no medidor PJ1103C. Devices são cadastrados pela página web e ficam na NVS (sem recompilar). Publica em `tuya32/...` no mosquitto do diamond (`192.168.18.137`), que faz bridge para o `192.168.101.3`. Ver `TuyaEsp32Meter/README.md`. Wi-Fi/MQTT de primeiro boot em `include/secrets.h` (gitignored).
+- **`TuyaEsp32Meter/`** — Firmware ESP32 (PlatformIO, `pio run -t upload`) com o mesmo protocolo, só leitura: medidor PJ1103C, disjuntor TMPH e tomada medidora cz. Devices são cadastrados pela página web e ficam na NVS (sem recompilar). Publica em `tuya32/...` no mosquitto do diamond (`192.168.18.137`), que faz bridge para o `192.168.101.3`. Ver `TuyaEsp32Meter/README.md`. Wi-Fi/MQTT de primeiro boot em `include/secrets.h` (gitignored).
 
 ### Fluxo de dados
 

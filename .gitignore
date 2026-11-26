@@ -363,3 +363,8 @@ MigrationBackup/
 FodyWeavers.xsd
 # LocalKeys dos devices Tuya: fora do git, mas copiadas para a imagem no build
 appsettings.local.json
+
+# dumps da Tuya OpenAPI: contem local_key
+plug-geladeira.txt
+disjuntor-63a.txt
+energy-meter-wifi.txt

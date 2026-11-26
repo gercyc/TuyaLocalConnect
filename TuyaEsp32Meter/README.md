@@ -2,12 +2,13 @@
 
 Firmware ESP32 que lê devices Tuya direto pela LAN (TCP 6668, protocolos
 3.3/3.4/3.5) e publica as leituras no MQTT com discovery do Home Assistant.
-É a versão embarcada do `MqttThSensorWorker`, hoje com dois perfis:
+É a versão embarcada do `MqttThSensorWorker`, hoje com três perfis:
 
 | Perfil | Device | Entidades |
 |---|---|---|
 | `pj1103c` | Medidor de energia dual Wi-Fi (PJ1103C) | potência, corrente, FP, energia e direção por canal; tensão, frequência, totais |
 | `tmph` | Disjuntor Wi-Fi 63A com medidor (TMPH) | Power, Voltage, Current; Switch 1 e Fault (`binary_sensor`); Power-on behavior e Electricity (diagnóstico) |
+| `cz-meter` | Tomada Wi-Fi com medidor (categoria cz) | as mesmas do `tmph` (mesmos DPs e mesma tabela) |
 
 Os devices são cadastrados **pela página web** e ficam gravados na NVS do
 ESP32. Adicionar, editar ou remover um device não exige recompilar.
@@ -63,10 +64,15 @@ A local key nunca volta pela API: ao editar, deixe o campo vazio para manter
 a atual. Remover um device apaga as entidades dele no HA (configs de
 discovery vazias e retidas).
 
-O device precisa de IP fixo (reserva DHCP): o PJ1103C e o TMPH não anunciam
-por broadcast UDP, então não há como redescobrir o endereço.
+O device precisa de IP fixo (reserva DHCP): o ESP32 não escuta o broadcast UDP
+(o PJ1103C e o TMPH nem anunciam), então não há como redescobrir o endereço.
 
-### Notas do disjuntor TMPH
+### Notas do disjuntor TMPH e da tomada cz
+
+Os dois usam a mesma tabela de DPs (`kMeteredRelay`): 1, 17–20, 26 e 38. A
+tomada só tem perfil próprio pelo modelo no discovery e pelo protocolo padrão
+(3.4; o TMPH é 3.5).
+
 
 - **Medição congelada no DP_QUERY:** ele devolve no DP_QUERY uma medição de
   até ~5 min atrás. O perfil pede `UPDATEDPS` (cmd `0x12`) para os DPs 18–20
@@ -74,7 +80,10 @@ por broadcast UDP, então não há como redescobrir o endereço.
 - **`add_ele` não é energia acumulada:** é um contador de Wh desde o último
   envio à nuvem, e satura em 100; ficou em 100 por 40 min com ~500 W. Vai
   cru, como diagnóstico. Para kWh no painel de Energia, crie no HA o helper
-  **Integral (Riemann)** sobre o `Power`.
+  **Integral (Riemann)** sobre o `Power`. Na tomada cz é igual: em 2026-11-26
+  ele caiu de 90 para 78 entre duas leituras.
+- **Tomada cz:** testada com a da geladeira (3.4). Com o refresh, tensão e
+  corrente mudam a cada leitura; a tensão bate com a do PJ1103C (±1 V).
 
 ## MQTT
 
@@ -132,7 +141,7 @@ preflight). Exemplo: `curl -H 'X-Requested-With: 1' -X POST http://<ip>/api/rest
 src/
   main.cpp              setup/loop
   tuya/                 protocolo: crypto (mbedTLS), frames 55AA/6699, cliente TCP
-  device_profiles.*     perfil -> DPs, escala, entidades HA e refresh (PJ1103C, TMPH)
+  device_profiles.*     perfil -> DPs, escala, entidades HA e refresh (PJ1103C, TMPH, tomada cz)
   ota.*                 ArduinoOTA (espota); o upload pela página fica em web_api.cpp
   device_store.*        devices na NVS (mutex; leitura devolve cópia)
   settings_store.*      Wi-Fi/MQTT/intervalo/senha na NVS
